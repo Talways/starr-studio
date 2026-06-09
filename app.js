@@ -3,7 +3,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const screens = { script:$("screen-script"), record:$("screen-record"), result:$("screen-result") };
-function show(name){ Object.values(screens).forEach(s=>s.classList.remove("active")); screens[name].classList.add("active"); }
+function show(name){ const p=document.getElementById("proc"); if(p)p.classList.add("hidden"); Object.values(screens).forEach(s=>s.classList.remove("active")); screens[name].classList.add("active"); }
 
 const state = {
   stream:null, facing:"user", mirror:true,
@@ -101,15 +101,33 @@ function drawCover(ctx, video, W, H, mirror){
   ctx.restore();
 }
 function startTake(){
-  const chunks = [];
+  state.curChunks = [];
+  state._takeFlushed = false;
   let r;
   try{ r = new MediaRecorder(state.recStream, state.recMime ? { mimeType:state.recMime, videoBitsPerSecond:10_000_000 } : undefined); }
   catch(e){ alert("Запись не поддерживается: "+(e.message||e)); return; }
-  r.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-  r.onstop = () => { if (chunks.length) state.segments.push(new Blob(chunks,{type:state.recType})); const res=state._takeRes; state._takeRes=null; if(res)res(); };
+  r.ondataavailable = e => { if (e.data && e.data.size) state.curChunks.push(e.data); };
+  r.onstop = () => flushTake();
   r.start(100); state.recorder = r;
 }
-function stopTake(){ return new Promise(res=>{ if(!state.recorder||state.recorder.state==="inactive"){res();return;} state._takeRes=res; try{state.recorder.stop();}catch(e){res();} }); }
+function flushTake(){
+  if (state._takeFlushed) return;
+  state._takeFlushed = true;
+  if (state.curChunks && state.curChunks.length) state.segments.push(new Blob(state.curChunks, { type: state.recType }));
+  const res = state._takeRes; state._takeRes = null; if (res) res();
+}
+function stopTake(){
+  return new Promise(res=>{
+    const r = state.recorder;
+    if (!r || r.state === "inactive"){ res(); return; }
+    state._takeFlushed = false; state._takeRes = res;
+    try{ r.requestData(); }catch(e){}     // вытолкнуть данные сразу
+    try{ r.stop(); }catch(e){}
+    setTimeout(flushTake, 3500);          // страховка: собрать из буфера, даже если событие stop не пришло (iOS)
+  });
+}
+function showProc(msg){ $("proc-msg").textContent = msg||"Собираю видео…"; $("proc").classList.remove("hidden"); }
+function hideProc(){ $("proc").classList.add("hidden"); }
 
 $("btn-record").onclick = async () => {
   if (state.recording){ await stopRecording(); return; }
@@ -178,9 +196,16 @@ async function stopRecording(){
   $("btn-record").classList.remove("recording");
   $("btn-pause").classList.add("hidden"); $("btn-discard").classList.add("hidden");
   $("btn-back").classList.remove("hidden"); $("btn-flip").classList.remove("hidden");
-  if (!state.paused) await stopTake();
-  state.paused = false;
-  await finalize();
+  showProc("Собираю видео…");           // мгновенный индикатор, чтобы не было «ничего не происходит»
+  try{
+    if (!state.paused) await stopTake();
+    state.paused = false;
+    await finalize();
+  }catch(e){
+    console.error("finalize:", e);
+    hideProc();
+    alert("Не удалось собрать видео: " + (e.message||e));
+  }
 }
 
 // ---------- Склейка дублей (если их несколько) ----------
@@ -225,12 +250,13 @@ async function flattenSegments(segs){
 
 // ---------- Финал ----------
 function fmtTime(s){ const m=Math.floor(s/60), ss=Math.floor(s%60); return `${m}:${ss<10?"0":""}${ss}`; }
-function setProc(p){ /* без отдельного экрана прогресса — no-op */ }
+function setProc(p){ $("proc-msg").textContent = "Склеиваю дубли… " + Math.round(p) + "%"; }
 async function finalize(){
   stopCamera();
   const segs = state.segments || [];
-  if (!segs.length){ alert("Запись пустая."); show("script"); return; }
+  if (!segs.length){ hideProc(); alert("Запись пустая (дубль не записался)."); show("script"); return; }
   let raw;
+  if (segs.length > 1) showProc("Склеиваю дубли…");
   try{ raw = (segs.length===1) ? segs[0] : await flattenSegments(segs); }
   catch(e){ console.warn("flatten:", e); raw = segs[segs.length-1]; }
   if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
@@ -254,4 +280,5 @@ async function saveVideo(){
 $("btn-save").onclick = saveVideo;
 $("btn-new").onclick = () => { show("script"); };
 
+window.__min = { state, startRecording, stopRecording, get finalize(){return finalize;} };
 })();
