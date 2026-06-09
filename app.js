@@ -90,10 +90,20 @@ function pickMime(){
   for (const m of c) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
   return "";
 }
+function drawCover(ctx, video, W, H, mirror){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh){ return; }
+  const scale = Math.max(W/vw, H/vh);
+  const dw = vw*scale, dh = vh*scale, dx = (W-dw)/2, dy = (H-dh)/2;
+  ctx.save();
+  if (mirror){ ctx.translate(W,0); ctx.scale(-1,1); }
+  ctx.drawImage(video, dx, dy, dw, dh);
+  ctx.restore();
+}
 function startTake(){
   const chunks = [];
   let r;
-  try{ r = new MediaRecorder(state.stream, state.recMime ? { mimeType:state.recMime, videoBitsPerSecond:8_000_000 } : undefined); }
+  try{ r = new MediaRecorder(state.recStream, state.recMime ? { mimeType:state.recMime, videoBitsPerSecond:10_000_000 } : undefined); }
   catch(e){ alert("Запись не поддерживается: "+(e.message||e)); return; }
   r.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
   r.onstop = () => { if (chunks.length) state.segments.push(new Blob(chunks,{type:state.recType})); const res=state._takeRes; state._takeRes=null; if(res)res(); };
@@ -114,6 +124,15 @@ function startRecording(){
   if (!state.stream){ alert("Камера не готова"); return; }
   state.recMime = pickMime();
   state.recType = (state.recMime && state.recMime.startsWith("video/mp4")) ? "video/mp4" : "video/webm";
+  // canvas-композит: вертикаль 1080×1920 + зеркало фронталки
+  const W = 1080, H = 1920;
+  state.W = W; state.H = H;
+  const canvas = document.createElement("canvas"); canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  state.recCanvas = canvas; state.recCtx = ctx;
+  const audioTracks = state.stream.getAudioTracks();
+  state.recStream = new MediaStream([...canvas.captureStream(30).getVideoTracks(), ...audioTracks]);
+
   state.segments = [];
   state.recording = true; state.paused = false;
   state.recStart = performance.now(); state.pausedAccum = 0; state.pauseStart = 0;
@@ -123,7 +142,11 @@ function startRecording(){
   $("btn-discard").classList.add("hidden");
   $("btn-back").classList.add("hidden"); $("btn-flip").classList.add("hidden");
   runTele(estSeconds($("tele-text").textContent, parseFloat($("speed").value))*1000);
+  const cam = $("cam");
   const tick = () => {
+    const mirror = state.mirror && state.facing === "user";
+    ctx.clearRect(0,0,W,H);
+    drawCover(ctx, cam, W, H, mirror);
     const active = state.paused ? (state.pauseStart-state.recStart-state.pausedAccum) : (performance.now()-state.recStart-state.pausedAccum);
     $("rec-timer").textContent = fmtTime(Math.max(0, active/1000));
     if (state.recording) state.raf = requestAnimationFrame(tick);
@@ -177,17 +200,26 @@ async function flattenSegments(segs){
   let started=false, i=0;
   for (const seg of segs){
     const url=URL.createObjectURL(seg); const v=document.createElement("video"); v.src=url; v.muted=false; v.playsInline=true; attachOffscreen(v);
-    await new Promise(r=>{ v.onloadedmetadata=r; v.onerror=r; });
+    // ждём метаданные (с таймаутом 5с, чтобы не зависнуть на битом куске)
+    const okMeta = await new Promise(r=>{ let done=false; const fin=ok=>{ if(done)return; done=true; r(ok); };
+      v.onloadedmetadata=()=>fin(true); v.onerror=()=>fin(false); setTimeout(()=>fin(false), 5000); });
+    if (!okMeta){ v.remove(); URL.revokeObjectURL(url); i++; setProc(i/segs.length*100); continue; }
     try{ const node=actx.createMediaElementSource(v); node.connect(dest); }catch(e){}
     try{ await v.play(); }catch(e){}
     try{ ctx.drawImage(v,0,0,W,H); }catch(e){}
     if (!started){ rec.start(100); started=true; }
-    let raf; const segDone=new Promise(res=>{ v.onended=()=>{cancelAnimationFrame(raf);res();}; });
+    let raf;
+    const maxMs = ((isFinite(v.duration)&&v.duration>0)? v.duration*1000 + 2000 : 180000); // страховка от зависона
+    const segDone=new Promise(res=>{
+      let fin=false; const stop=()=>{ if(fin)return; fin=true; cancelAnimationFrame(raf); res(); };
+      v.onended=stop; v.onerror=stop; setTimeout(stop, maxMs);
+    });
     const fr=()=>{ try{ctx.drawImage(v,0,0,W,H);}catch(e){} raf=requestAnimationFrame(fr); }; fr();
-    await segDone; v.remove(); URL.revokeObjectURL(url);
+    await segDone; try{ v.pause(); }catch(e){} v.remove(); URL.revokeObjectURL(url);
     i++; setProc(i/segs.length*100);
   }
-  if (started){ rec.stop(); await done; } try{actx.close();}catch(e){}
+  if (started){ rec.stop(); await done; } else { try{rec.stop()}catch(e){} }
+  try{actx.close();}catch(e){}
   return new Blob(chunks,{type:state.recType});
 }
 
