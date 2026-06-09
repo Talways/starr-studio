@@ -30,17 +30,36 @@ $("btn-back").onclick = () => { stopCamera(); stopTele(); show("script"); };
 
 // ---------- Камера ----------
 function applyMirror(){ $("cam").classList.toggle("mirror", state.mirror && state.facing==="user"); }
+function camMsg(text){ const b=$("cam-msg"); if(!text){ b.classList.add("hidden"); return; } b.textContent=text; b.classList.remove("hidden"); }
 async function startCamera(){
   stopCamera();
-  try{
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: state.facing, width:{ideal:1920}, height:{ideal:1080} },
-      audio: { echoCancellation:true, noiseSuppression:true },
-    });
-    const cam = $("cam"); cam.srcObject = state.stream; await cam.play().catch(()=>{});
-    applyMirror();
-  }catch(e){ alert("Нет доступа к камере. Открой по HTTPS и разреши камеру/микрофон.\n"+(e.message||e)); }
+  camMsg("");
+  const cam = $("cam");
+  // простые constraints + фолбэк (тяжёлые размеры на некоторых фронталках ломают видео)
+  let stream = null, err = null;
+  for (const c of [ { video:{facingMode:state.facing}, audio:true }, { video:true, audio:true }, { video:true, audio:false } ]){
+    try{ stream = await navigator.mediaDevices.getUserMedia(c); break; }
+    catch(e){ err = e; }
+  }
+  if (!stream){ camMsg("Камера недоступна: " + (err && (err.name||err.message) || "ошибка") + "\nНажми, чтобы повторить"); return; }
+  state.stream = stream;
+  cam.srcObject = stream; cam.muted = true; cam.playsInline = true;
+  applyMirror();
+  try{ await cam.play(); }
+  catch(e){ camMsg("Нажми, чтобы включить камеру ▶"); return; }
+  // проверка, что видео реально идёт
+  const vt = stream.getVideoTracks()[0];
+  if (!vt || vt.readyState !== "live"){ camMsg("Видео с камеры не запустилось. Нажми, чтобы повторить."); }
 }
+// тап по сообщению — повторить запуск/проигрывание (это пользовательский жест, iOS любит жесты)
+$("cam-msg").onclick = async () => {
+  camMsg("");
+  const cam = $("cam");
+  if (state.stream && state.stream.getVideoTracks().length){
+    try{ await cam.play(); applyMirror(); return; }catch(e){}
+  }
+  await startCamera();
+};
 function stopCamera(){ if (state.stream){ state.stream.getTracks().forEach(t=>t.stop()); state.stream=null; } }
 $("btn-flip").onclick = async () => { state.facing = state.facing==="user"?"environment":"user"; await startCamera(); };
 

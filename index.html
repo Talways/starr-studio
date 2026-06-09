@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>STARR Studio</title>
-<link rel="stylesheet" href="styles.css?v=22">
+<link rel="stylesheet" href="styles.css?v=23">
 <link rel="manifest" href="manifest.webmanifest">
 </head>
 <body>
@@ -28,6 +28,7 @@
 <section id="screen-record" class="screen">
   <div class="cam-wrap">
     <video id="cam" playsinline autoplay muted></video>
+    <button id="cam-msg" class="cam-msg hidden"></button>
 
     <div id="teleprompter" class="teleprompter">
       <div id="tele-text" class="tele-text"></div>
@@ -66,6 +67,6 @@
 
 <div id="proc" class="proc hidden"><div class="spinner"></div><div id="proc-msg">Собираю видео…</div></div>
 
-<script src="app.js?v=22"></script>
+<script src="app.js?v=23"></script>
 </body>
 </html>
